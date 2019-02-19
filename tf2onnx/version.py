@@ -1,3 +1,3 @@
 
-version = '0.0.2.0'
-git_version = '149990d0bccd0500debc65bd03d132d5bc91710f'
+version = '0.4.0'
+git_version = 'ce998341bee2c355e86a6267f451082b8d4d2e06'

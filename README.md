@@ -1,23 +1,21 @@
 tf2onnx - convert TensorFlow models to ONNX models.
 ========
 
-Tf2onnx converts a TensorFlow graph to an ONNX graph.
-
-Tf2onnx is in its early development. Mileage will vary since TensorFlow supports ~4 times the operations that the current ONNX version supports. But standard models seem to be using mostly ops that ONNX does support.
-
-| Linux |
-|-------|
-| [![Build Status](https://travis-ci.org/onnx/tensorflow-onnx.svg?branch=master)](https://travis-ci.org/onnx/tensorflow-onnx)
+![Build Status](https://dev.azure.com/tensorflow-onnx/tensorflow-onnx/_apis/build/status/unit_test?branchName=master)
 
 # Supported ONNX version
 tensorflow-onnx will use the onnx version installed on your system and installs the latest onnx version if none is found.
 
-By default we use opset 7 for the resulting onnx graph since most runtimes will support opset 7.
+By default we use opset 7 for the resulting onnx graph since most runtimes will support opset 7. Opset 7 was introduced in onnx-1.2.
 
 With the release of onnx-1.3 there is now opset 8 - to create an onnx graph for opset 8 use in the command line ```--opset 8```.
 
 # Status
-Basic net and conv nets should work. A list of models that pass tests can be found [here](tests/run_pretrained_models.yaml)
+We support many TensorFlow models. Support for Fully Connected and Convolutional networks is mature. Dynamic LSTM/GRU/Attention networks should work but the code for this is evolving. 
+A list of models that we use for testing can be found [here](tests/run_pretrained_models.yaml)
+
+Supported RNN classes and APIs: LSTMCell, BasicLSTMCell, GRUCell, GRUBlockCell, MultiRNNCell, and user defined RNN cells inheriting rnn_cell_impl.RNNCell, used along with DropoutWrapper, BahdanauAttention, AttentionWrapper.
+Check [tips](examples/rnn_tips.md) when converting RNN models.
 
 # Prerequisites
 
@@ -28,15 +26,28 @@ pip install tensorflow
 or
 pip install tensorflow-gpu
 ```
-## Install Caffe2 [**Optional**]
-If you want to run unit tests against the Caffe2 onnx backend, build and install Caffe2 following the instructions here: ```
-https://caffe2.ai/```
+## Install  runtime
+Install an onnx runtime of your choice if you want to run tests. For example:
 
-## Python Version
-We tested with tensorflow 1.5,1.6,1.7,1.8 and anaconda **3.5,3.6**.
+onnxruntime (only avaliable on linux):
+
+```pip install onnxruntime```
+
+For caffe2, follow the instructions here:
+
+```https://caffe2.ai/```
+
+
+We tested with caffe2 and onnxruntime and unit tests are passing for those.
+
+## Supported Tensorflow and Python Versions
+We tested with tensorflow 1.5-1.11 and anaconda **3.5,3.6**.
 
 # Installation
+## From Pypi
+```pip install -U tf2onnx```
 
+## From Source
 Once dependencies are installed, from the tensorflow-onnx folder call:
 
 ```
@@ -48,7 +59,7 @@ tensorflow-onnx requires onnx-1.2.2 or better and will install/upgrade onnx if n
 
 To create a distribution:
 ```
-python setup.py sdist
+python setup.py bdist_wheel
 ```
 
 # Usage
@@ -56,28 +67,39 @@ python setup.py sdist
 To convert a TensorFlow model, tf2onnx expects a ```frozen TensorFlow graph``` and the user needs to specify inputs and outputs for the graph by passing the input and output
 names with ```--inputs INPUTS``` and ```--outputs OUTPUTS```. 
 
-Usage command:
 ```
-python -m tf2onnx.convert --input SOURCE_FROZEN_GRAPH_PB\
-    --inputs SOURCE_GRAPH_INPUTS\
-    --outputs SOURCE_GRAPH_OUTPUS\
-    [--output TARGET_ONNX_GRAPH]\
-    [--target TARGET]\
-    [--continue_on_error]\
-    [--verbose]\
-    [--custom-ops list-of-custom-ops]\
+python -m tf2onnx.convert --input SOURCE_FROZEN_GRAPH_PB
+    --inputs SOURCE_GRAPH_INPUTS
+    --outputs SOURCE_GRAPH_OUTPUS
+    [--inputs-as-nchw inputs_provided_as_nchw]
+    [--target TARGET]
+    [--output TARGET_ONNX_GRAPH]
+    [--target TARGET]
+    [--continue_on_error]
+    [--verbose]
+    [--custom-ops list-of-custom-ops]
     [--opset OPSET]
-    [--optimize_transpose]
+    [--fold_const]
 ```
 
-Parameters:
-- input: frozen TensorFlow graph, which can be created with the [freeze graph tool](#freeze_graph).
-- output: the target onnx file path.
-- inputs/outputs: Tensorflow graph's input/output names, which can be found with [summarize graph tool](#summarize_graph).
-- target: There are different onnx versions and workarounds for runtimes that can be set with ```--target TARGET```. 
-- opset: by default we uses the newest opset installed with the onnx package (for example onnx-1.2.2 would have opset 7). By specifieing ```--opset``` the user can override the default to generate a graph with the desired opset. For example ```--opset 5``` would create a onnx graph that uses only ops available in opset 5. Because older opsets have in most cases fewer ops, some models might not convert on a older opset.
-- custom-ops: the runtime may support custom ops that are not defined in onnx. A user can asked the converter to map to custom ops by listing them with the --custom-ops option. Tensorflow ops listed here will be mapped to a custom op of the same name as the tensorflow op but in the onnx domain ai.onnx.converters.tensorflow. For example: ```--custom-ops Print``` will insert a op ```Print``` in the onnx domain ```ai.onnx.converters.tensorflow``` into the graph. We also support a python api for custom ops documented later in this readme. 
-- optimize_transpose: when set, those transpose operations introduced during tfgraph-to-onnxgraph conversion will be removed.
+## Parameters
+### input
+frozen TensorFlow graph, which can be created with the [freeze graph tool](#freeze_graph).
+### output 
+the target onnx file path.
+### inputs, outputs
+Tensorflow graph's input/output names, which can be found with [summarize graph tool](#summarize_graph). Those names typically end on ```:0```, for example ```--inputs input0:0,input1:0```
+### inputs-as-nchw
+By default we preserve the image format of inputs (nchw or nhwc) as given in the TensorFlow model. If your hosts (for example windows) native format nchw and the model is written for nhwc, ```--inputs-as-nchw``` tensorflow-onnx will transpose the input. Doing so is convinient for the application and the converter in many cases can optimize the transpose away. For example ```--inputs input0:0,input1:0 --inputs-as-nchw input0:0``` assumes that images are passed into ```input0:0``` as nchw while the TensorFlow model given uses nhwc.
+### target 
+Some runtimes need workarounds, for example they don't support all types given in the onnx spec. We'll workaround it in some cases by generating a different graph. Those workarounds are activated with ```--target TARGET```. 
+### opset
+by default we uses the newest opset 7 to generate the graph. By specifieing ```--opset``` the user can override the default to generate a graph with the desired opset. For example ```--opset 5``` would create a onnx graph that uses only ops available in opset 5. Because older opsets have in most cases fewer ops, some models might not convert on a older opset.
+### custom-ops
+the runtime may support custom ops that are not defined in onnx. A user can asked the converter to map to custom ops by listing them with the --custom-ops option. Tensorflow ops listed here will be mapped to a custom op with the same name as the tensorflow op but in the onnx domain ai.onnx.converters.tensorflow. For example: ```--custom-ops Print``` will insert a op ```Print``` in the onnx domain ```ai.onnx.converters.tensorflow``` into the graph. We also support a python api for custom ops documented later in this readme. 
+### fold_const
+when set, TensorFlow fold_constants transformation will be applied before conversion. This will benefit features including Transpose optimization (e.g. Transpose operations introduced during tf-graph-to-onnx-graph conversion will be removed), and RNN unit conversion (for example LSTM). Older TensorFlow version might run into issues with this option depending on the model.
+
 
 Usage example (run following commands in tensorflow-onnx root directory):
 ```
@@ -88,7 +110,7 @@ python -m tf2onnx.convert\
     --output tests/models/fc-layers/model.onnx\
     --verbose
 ```
-Some models specify placeholders with unknown ranks which can not be mapped to onnx. 
+Some models specify placeholders with unknown ranks and dims which can not be mapped to onnx. 
 In those cases one can add the shape behind the input name in ```[]```, for example ```--inputs X:0[1,28,28,3]```
 
 ## <a name="summarize_graph"></a>Tool to get Graph Inputs & Outputs
@@ -134,26 +156,29 @@ optional arguments:
   --opset OPSET      target opset to use
   --perf csv-file    capture performance numbers or tensorflow and onnx runtime
   --debug            dump generated graph with shape info
-  --optimize_transpose when set, those transpose operations introduced during tf-graph-to-onnx-graph conversion will be removed.
+  --fold_const when set, TensorFlow fold_constants transformation will be applied before conversion. This will benefit features including Transpose optimization (e.g. Transpose operations introduced during tf-graph-to-onnx-graph conversion will be removed), and RNN unit conversion (for example LSTM).
 ```
-```run_pretrained_models.py``` will run the TensorFlow model, captures the TensorFlow output and runs the same test against the specified ONNX backend after converting the model. The only practical backend to use at this time is Caffe2, and you need to install Caffe2 for this to work. 
-If the option ```--perf csv-file``` is specified, we'll capture the eval runtime for tensorflow and onnx runtime and write the result into the given csv file.
+```run_pretrained_models.py``` will run the TensorFlow model, captures the TensorFlow output and runs the same test against the specified ONNX backend after converting the model.
+
+If the option ```--perf csv-file``` is specified, we'll capture the timeing for inferece of tensorflow and onnx runtime and write the result into the given csv file.
 
 You call it for example with:
 ```
-python tests/run_pretrained_models.py --backend caffe2 --config tests/run_pretrained_models.yaml --perf perf.csv
+python tests/run_pretrained_models.py --backend onnxruntime --config tests/run_pretrained_models.yaml --perf perf.csv
 ```
 
-# Using the Python Api
-## Tensorflow to onnx conversion
-In some cases it will be usefull to convert the models from tensorflow to onnx from a python script. You can use the following api:
+# Using the Python API
+## TensorFlow to ONNX conversion
+In some cases it will be useful to convert the models from TensorFlow to ONNX from a python script. You can use the following API:
 ```
 import tf2onnx
 
 tf2onnx.tfonnx.process_tf_graph(tf_graph, 
             continue_on_error=False, verbose=False, target=None,
             opset=None, custom_op_handlers=None,
-            custom_rewriter=None, extra_opset=None):
+            custom_rewriter=None, extra_opset=None,
+            shape_override=None, inputs_as_nchw=None,
+            input_names=None, output_names=None):
     """Convert tensorflow graph to onnx graph.
         Args:
             tf_graph: tensorflow graph
@@ -163,6 +188,11 @@ tf2onnx.tfonnx.process_tf_graph(tf_graph,
             opset: the opset to be used (int, default is latest)
             custom_op_handlers: dictionary of custom ops handlers
             custom_rewriter: list of custom graph rewriters
+            extra_opset: list of extra opset's, for example the opset's used by custom ops
+            shape_override: dict with inputs that override the shapes given by tensorflow
+            inputs_as_nchw: transpose inputs in list from nchw to nchw
+            input_names: list of input node names in graph, input name format as node_name:port_id
+            output_names: list of output node names in graph, output name format as node_name:port_id
         Return:
             onnx graph
     """
@@ -176,9 +206,8 @@ with tf.Session() as sess:
     x = tf.placeholder(tf.float32, [2, 3], name="input")
     x_ = tf.add(x, x)
     _ = tf.identity(x_, name="output")
-    onnx_graph = tf2onnx.tfonnx.process_tf_graph(sess.graph)
-    model_proto = onnx_graph.make_model("test", 
-                                        ["input:0"], ["output:0"])
+    onnx_graph = tf2onnx.tfonnx.process_tf_graph(sess.graph, input_names=["input:0"], output_names=["output:0"])
+    model_proto = onnx_graph.make_model("test")
     with open("/tmp/model.onnx", "wb") as f:
         f.write(model_proto.SerializeToString())
 ```
@@ -198,7 +227,6 @@ def print_handler(ctx, node, name, args):
     #   T output = Print(T input, data, @list(type) U, @string message, @int first_n, @int summarize)
     # becomes:
     #   T output = Identity(T Input)
-    node.type = "Identity"
     node.domain = _TENSORFLOW_DOMAIN
     del node.input[1:]
     return node
@@ -210,15 +238,16 @@ with tf.Session() as sess:
     x_ = tf.Print(x, [x], "hello")
     _ = tf.identity(x_, name="output")
     onnx_graph = tf2onnx.tfonnx.process_tf_graph(sess.graph,
-                                                 custom_op_handlers={"Print": print_handler},
-                                                 extra_opset=[helper.make_opsetid(_TENSORFLOW_DOMAIN, 1)])
-    model_proto = onnx_graph.make_model("test", ["input:0"], ["output:0"])
+                                                 custom_op_handlers={"Print": (print_handler, ["Identity", "mode"])},
+                                                 extra_opset=[helper.make_opsetid(_TENSORFLOW_DOMAIN, 1)],
+                                                 input_names=["input:0"],
+                                                 output_names=["output:0"])
+    model_proto = onnx_graph.make_model("test")
     with open("/tmp/model.onnx", "wb") as f:
         f.write(model_proto.SerializeToString())
 ```
 
 # How tf2onnx works
-While the protobuf format of ONNX is not all that different than onnx, mileage will vary because TensorFlow supports 4x the ops compared to the current version of ONNX.
 The converter needs to take care of a few things:
 1. Convert the protobuf format. Since the format is similar this step is straight forward.
 2. TensorFlow types need to be mapped to their ONNX equivalent.
@@ -253,11 +282,6 @@ If you like to contribute and add new conversions to tf2onnx, the process is som
 3. If the tensorflow op is composed of multiple ops, consider using a graph re-write. While this might be a little harder initially, it works better for complex patterns.
 4. Add a unit test in tests/test_backend.py. The unit tests mostly create the tensorflow graph, run it and capture the output, than convert to onnx, run against a onnx backend and compare tensorflow and onnx results. 
 5. If there are pre-trained models that use the new op, consider adding those to test/run_pretrained_models.py.
-
-# What is missing
-- lstm/gru support (working on this)
-- more testing
-- more model coverage
 
 # License
 
